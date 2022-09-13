@@ -17,31 +17,42 @@ def after_syndication_listener(package_id, **kwargs):
     profile = kwargs["profile"]
     remote = kwargs["remote"]
 
-    if "id" in remote:
-        ckan = get_target(profile.ckan_url, profile.api_key)
-        resources = remote.get('resources')
+    if "id" not in remote:
+        return
 
-        pkg = model.Package.get(package_id)
-        original_resources = pkg.resources
+    ckan = get_target(profile.ckan_url, profile.api_key)
+    resources = remote.get('resources')
 
-        for res in resources:
-            if profile.ckan_url in res.get('url', ''):
-                check_res = requests.head(res['url'])
+    pkg = model.Package.get(package_id)
+    original_resources = pkg.resources
 
-                if not check_res.ok:
-                    log.debug("File is not exists for {0} resource, copying it.".format(
-                        res['id']
-                    ))
-                    org_res = [r for r in original_resources if r.id == res['id']]
-                    if org_res:
-                        uploader = get_resource_uploader(org_res[0].as_dict())
-                        file_path = uploader.get_path(org_res[0].id)
-                        try:
-                            with open(file_path, 'rb') as file_data:
-                                ckan.action.resource_update(
-                                    id=res['id'],
-                                    upload=FlaskFileStorage(file_data)
-                                )
-                        except Exception as e:
-                            log.debug(e)
+    for res in resources:
+        if profile.ckan_url not in res.get('url', ''):
+            continue
 
+        check_res = requests.head(res['url'])
+
+        if check_res.ok:
+            continue
+
+        log.debug("File is not exists for {0} resource, copying it.".format(
+            res['id']
+        ))
+        org_res = [r for r in original_resources if r.id == res['id']]
+        if not org_res:
+            continue
+
+        uploader = get_resource_uploader(org_res[0].as_dict())
+        file_path = uploader.get_path(org_res[0].id)
+        try:
+            with open(file_path, 'rb') as file_data:
+                ckan.action.resource_update(
+                    id=res['id'],
+                    upload=FlaskFileStorage(file_data)
+                )
+        except Exception:
+            log.exception(
+                "Cannot upload file from local resource %s to the remote %s",
+                org_res[0].id,
+                res["id"]
+            )

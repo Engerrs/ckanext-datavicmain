@@ -9,7 +9,8 @@ import ckan.model as model
 import ckan.plugins as p
 import ckan.plugins.toolkit as toolkit
 
-from ckanext.syndicate.interfaces import ISyndicate
+from ckanext.syndicate.interfaces import ISyndicate, Profile
+
 from ckanext.datavicmain import actions, helpers, validators, auth, auth_middleware, cli
 from ckanext.datavicmain.syndication.odp import prepare_package_for_odp
 from ckanext.datavicmain.syndication import listeners
@@ -299,20 +300,45 @@ class DatasetForm(p.SingletonPlugin, toolkit.DefaultDatasetForm):
                 # DATAVIC-251 - Create activity for private datasets
                 helpers.set_private_activity(pkg_dict, context, str('changed'))
 
-
-        is_ready_for_syndication = toolkit.h.is_ready_for_publish(pkg_dict)
-        utils.update_syndication_flag(pkg_dict, is_ready_for_syndication)
-        
-        if is_ready_for_syndication and toolkit.asbool(pkg_dict.get('syndicate')):
-            toolkit.h.flash_success("Dataset '{0}' is being syndicated to ODP.".format(pkg_dict['title']))
-        pass
-
     # IClick
     def get_commands(self):
         return cli.get_commands()
-    
+
     # ISyndicate
+    def _requires_public_removal(self, pkg: model.Package, profile: Profile) -> bool:
+        """Decide, whether the package must be deleted from Discover.
+        """
+        is_syndicated = bool(pkg.extras.get(profile.field_id))
+        is_deleted = pkg.state == "deleted"
+        is_archived = pkg.extras.get("workflow_status") == "archived"
+        return is_syndicated and (is_deleted or is_archived)
+
+
     def prepare_package_for_syndication(self, package_id, data_dict, profile):
         if profile.id == "odp":
             data_dict = prepare_package_for_odp(package_id, data_dict)
+
+        pkg = model.Package.get(package_id)
+        assert pkg, f"Cannot syndicate non-existing package {package_id}"
+
+        if self._requires_public_removal(pkg, profile):
+            data_dict["state"] = "deleted"
+
         return data_dict
+
+    def skip_syndication(
+        self, package: model.Package, profile: Profile
+    ) -> bool:
+        if self._requires_public_removal(package, profile):
+            log.debug("Syndicate %s because it requires removal", package.id)
+            return False
+
+        if package.private:
+            log.debug("Do not syndicate %s because it is private", package.id)
+            return True
+
+        if  'published' != package.extras.get("workflow_status"):
+            log.debug("Do not syndicate %s because it is not published", package.id)
+            return True
+
+        return False
